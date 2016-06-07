@@ -619,8 +619,7 @@ func main() {
     }
   }
   fmt.Println("Button Pressed")
-
-
+  C.sleep(1)
 
   fmt.Println("Loggin Accelerometer data ...");
 	for {
@@ -628,10 +627,15 @@ func main() {
     C.Gyro_getADC();
 		C.clock_gettime(C.CLOCK_REALTIME, &timestamp)
   	buffer := fmt.Sprintf("AccelXYZ, %d, %d, %d, %d, %d\n", C.imu.accADC[C.ROLL],C.imu.accADC[C.PITCH], C.imu.accADC[C.YAW], int(timestamp.tv_sec), int(timestamp.tv_nsec));
+    if (C.digitalRead(GPIO4) == C.LOW) {
+      break
+    } 
   	//fmt.Printf(buffer)
   	// Write to the file
   	f.WriteString(buffer)
   	//C.sleep(1)
 	}
+
+  fmt.Println("Sismometer Finished ...");
 
 }
