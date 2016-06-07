@@ -13,6 +13,7 @@ import "os"
 func main() {
 	var tr2 C.struct_timespec
 	var tr3 C.struct_timespec
+	const num_avgs int = 10
 
 	one_billion := (uint64)(1000000000)
 
@@ -26,36 +27,39 @@ func main() {
 	ipv6addr := "["+os.Args[1]+"]:8081"
 	conn, _ := net.Dial("tcp", ipv6addr)
 
-	// Receive time from server
-	// Do not care about message at this point
-	message, _ := bufio.NewReader(conn).ReadString('\n')
-//	fmt.Print("Server Time= " +message)
+	for i := 0; i < num_avgs; i++ {
 
-	// Get current time
-	C.clock_gettime(C.CLOCK_REALTIME, &tr2)
-	C.clock_gettime(C.CLOCK_REALTIME, &tr3)
-
-
-	// Calc time difference
-	secDiff := (uint64)(tr3.tv_sec)
-	nsecDiff := (uint64)(tr3.tv_nsec)
-	if nsecDiff < (uint64)(tr2.tv_nsec) {
-		secDiff -= 1
-		nsecDiff += one_billion
+		// Receive time from server
+		// Do not care about message at this point
+		bufio.NewReader(conn).ReadString('\n')
+	//	fmt.Print("Server Time= " +message)
+	
+		// Get current time
+		C.clock_gettime(C.CLOCK_REALTIME, &tr2)
+		C.clock_gettime(C.CLOCK_REALTIME, &tr3)
+	
+	
+		// Calc time difference
+		secDiff := (uint64)(tr3.tv_sec)
+		nsecDiff := (uint64)(tr3.tv_nsec)
+		if nsecDiff < (uint64)(tr2.tv_nsec) {
+			secDiff -= 1
+			nsecDiff += one_billion
+		}
+		secDiff -= (uint64)(tr2.tv_sec)
+		nsecDiff -= (uint64)(tr2.tv_nsec)
+	
+	
+		sendBuff := fmt.Sprintf("%d:%d\n", (uint64)(secDiff), (uint64)(nsecDiff))
+		fmt.Printf(sendBuff)
+		conn.Write([]byte(sendBuff))
 	}
-	secDiff -= (uint64)(tr2.tv_sec)
-	nsecDiff -= (uint64)(tr2.tv_nsec)
-
-
-	sendBuff := fmt.Sprintf("%d:%d\n", (uint64)(secDiff), (uint64)(nsecDiff))
-	fmt.Printf(sendBuff)
-	conn.Write([]byte(sendBuff))
 
 //	// Send client time to server
 //	fmt.Fprintf(conn, buffer)
 
 	// Receive updated time from server
-	message, _ = bufio.NewReader(conn).ReadString('\n')
+	message, _ := bufio.NewReader(conn).ReadString('\n')
 	fmt.Printf(message +"\n")
 
 
@@ -70,6 +74,8 @@ func main() {
 	fmt.Printf("s_nums[0]: %s\n", s_nums[0])
 	fmt.Printf("s_nums[1]: %s\n", s_nums[1])
 	fmt.Printf("s_nums[2]: %s\n", s_nums[2])
+	fmt.Printf("Avg time difference in ns: %d\n", (uint64)(nsecDelay))
+	
 
 	s_nsec += nsecDelay
 	for s_nsec > one_billion {
@@ -83,7 +89,6 @@ func main() {
 
 	C.clock_settime(C.CLOCK_REALTIME, &tr2 )
 
-	fmt.Printf("Time difference in ns: %d\n", (uint64)(nsecDelay))
 
 
 	// close connection
