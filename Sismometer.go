@@ -30,6 +30,40 @@ package main
 #include <unistd.h>
 
 
+// Pin logic states
+#define HIGH 0x1
+#define LOW  0x0
+
+// Pin modes
+#define INPUT 0x0
+#define OUTPUT 0x1
+#define INPUT_PULLUP 0x2
+#define INPUT_PULLDOWN 0x3
+
+
+// BCM2708 Registers for GPIO (Do not put them in .h)
+#define BCM2708_PERI_BASE   0x20000000
+#define GPIO_BASE           (BCM2708_PERI_BASE + 0x200000)
+#define OFFSET_FSEL         0   // 0x0000
+#define OFFSET_SET          7   // 0x001c / 4
+#define OFFSET_CLR          10  // 0x0028 / 4
+#define OFFSET_PINLEVEL     13  // 0x0034 / 4
+#define OFFSET_PULLUPDN     37  // 0x0094 / 4
+#define OFFSET_PULLUPDNCLK  38  // 0x0098 / 4
+#define GPIO_FSEL_INPUT     0   // Pin Input mode
+#define GPIO_FSEL_OUTPUT    1   // Pin Output mode
+#define PAGE_SIZE  (4*1024)
+#define BLOCK_SIZE (4*1024)
+static volatile uint32_t *gpio_map = NULL;
+static uint8_t open_gpiomem_flag = 0;
+char GPIO_DRIVER_NAME[] = "/dev/gpiomem";
+
+
+void pinMode(uint8_t pin, uint8_t mode);
+void digitalWrite(uint8_t pin, uint8_t value);
+int digitalRead(uint8_t pin);
+
+
 // lsm9d0 Address
 #define LSM9DS0_ACC_ADR  (0x3D >> 1) //Adafruit: (0x3B >> 1) Quad: (0x3D >> 1)
 #define LSM9DS0_GYRO_ADR (0xD5 >> 1) //Adafruit: (0xD7 >> 1) Quad: (0xD5 >> 1)
@@ -432,11 +466,106 @@ void Device_Mag_getADC() {
                        ((rawADC[5]<<8) | rawADC[4]) >> MAG_DELIMETER);
 }
 
+
+
+//
+//
+//     Digital
+//
+//
+
+// Sets pin (gpio) mode as INPUT/INTPUT_PULLUP/INTPUT_PULLDOWN/OUTPUT
+void pinMode(uint8_t pin, uint8_t mode)
+{
+    int mem_fd;
+    uint8_t *gpio_mem;
+    int clk_offset = OFFSET_PULLUPDNCLK + (pin/32);
+    int shift_offset = (pin%32);
+    int offset = OFFSET_FSEL + (pin/10);
+    int shift = (pin%10)*3;
+
+    // Initialize gpiomem only once
+    if (open_gpiomem_flag == 0) {
+        if ((mem_fd = open(GPIO_DRIVER_NAME, O_RDWR|O_SYNC) ) < 0) {
+            fprintf(stderr, "%s(): gpio driver %s: %s\n",__func__, 
+                GPIO_DRIVER_NAME, strerror (errno));
+            exit(1);
+        }
+
+        if ((gpio_mem = (uint8_t *) malloc(BLOCK_SIZE + (PAGE_SIZE-1))) == NULL) {
+            fprintf(stderr, "%s(): gpio error: %s\n",__func__, strerror (errno));
+            exit(1);
+        }
+
+        if ((uint32_t)gpio_mem % PAGE_SIZE) {
+            gpio_mem += PAGE_SIZE - ((uint32_t)gpio_mem % PAGE_SIZE);
+        }
+
+        gpio_map = (uint32_t *)mmap( (void *)gpio_mem, BLOCK_SIZE, 
+            PROT_READ|PROT_WRITE, MAP_SHARED|MAP_FIXED, mem_fd, GPIO_BASE);
+
+        if ((uint32_t)gpio_map < 0) {
+            fprintf(stderr, "%s(): gpio error: %s\n",__func__, strerror (errno));
+            exit(1);
+        }
+
+        // gpiomem initialized correctly
+        open_gpiomem_flag = 1;
+    }
+
+
+    // Set resistor mode PULLUP, PULLDOWN or PULLOFF resitor (OUTPUT always PULLOFF)
+    if (mode == INPUT_PULLDOWN) {
+       *(gpio_map+OFFSET_PULLUPDN) = (*(gpio_map+OFFSET_PULLUPDN) & ~3) | 0x01;
+    } else if (mode == INPUT_PULLUP) {
+       *(gpio_map+OFFSET_PULLUPDN) = (*(gpio_map+OFFSET_PULLUPDN) & ~3) | 0x02;
+    } else { // mode == PULLOFF
+       *(gpio_map+OFFSET_PULLUPDN) &= ~3;
+    }
+    usleep(1);
+    *(gpio_map+clk_offset) = 1 << shift_offset;
+    usleep(1);
+    *(gpio_map+OFFSET_PULLUPDN) &= ~3;
+    *(gpio_map+clk_offset) = 0;
+
+    // Set pin mode INPUT/OUTPUT
+    if (mode == OUTPUT) {
+        *(gpio_map+offset) = (*(gpio_map+offset) & ~(7<<shift)) | (GPIO_FSEL_OUTPUT<<shift);
+    } else { // mode == INPUT or INPUT_PULLUP or INPUT_PULLDOWN
+        *(gpio_map+offset) = (*(gpio_map+offset) & ~(7<<shift)) | (GPIO_FSEL_INPUT<<shift);
+    }
+
+}
+
+// Sets a pin (gpio) output to 1 or 0
+void digitalWrite(uint8_t pin, uint8_t val)
+{
+    int offset;
+    if (val) { // value == HIGH
+        offset = OFFSET_SET + (pin / 32);
+    } else {    // value == LOW
+        offset = OFFSET_CLR + (pin / 32);
+    }
+    *(gpio_map+offset) = 1 << pin % 32;
+}
+
+// Returns the value of a pin (gpio) input (1 or 0)
+int digitalRead(uint8_t pin)
+{
+   int offset, value, mask;
+   offset = OFFSET_PINLEVEL + (pin/32);
+   mask = (1 << pin%32);
+   value = *(gpio_map+offset) & mask;
+   return (value) ? HIGH : LOW;
+}
+
 */
 import "C"
 import "fmt"
 import "os"
 
+const GPIO4 = 4    // Input
+const GPIO17 = 17  // Output just to supply voltage to the pushbutton. 
 
 func main() {
 	var timestamp C.struct_timespec
@@ -444,19 +573,17 @@ func main() {
 	var id int;
 	var chip_detected bool = true;
   
-  	fmt.Println("LSM9D0 Test");
+  fmt.Println("LSM9D0 Test");
+
+  //Digital Init
+  C.pinMode(GPIO4, C.INPUT);
+  C.pinMode(GPIO17, C.OUTPUT);
+  C.digitalWrite(GPIO17, C.HIGH);
 
 	//I2C init
 	C.WirePi_begin();
 
 	// Detect the IMU chip
-	/*
-	id = int(C.i2c_readReg(C.LSM9DS0_ACC_ADR, C.LSM9DS0_REGISTER_WHO_AM_I_XM));
-	if (id != int(C.LSM9DS0_XM_ID)) {
-		chip_detected = false;
-	} 
-	*/
-
 	id = int(C.i2c_readReg(C.LSM9DS0_GYRO_ADR, C.LSM9DS0_REGISTER_WHO_AM_I_G));
 	if (id != int(C.LSM9DS0_G_ID)) {
 		chip_detected = false;
@@ -468,41 +595,43 @@ func main() {
 
 
 	// open output file
-    f, err := os.Create("output.txt")
-    if err != nil {
-        panic(err)
-    }
-    // close fo on exit and check for its returned error
-    defer func() {
-        if err := f.Close(); err != nil {
-            panic(err)
-        }
-    }()
+  f, err := os.Create("output.txt")
+  if err != nil {
+      panic(err)
+  }
+  // close fo on exit and check for its returned error
+  defer func() {
+      if err := f.Close(); err != nil {
+          panic(err)
+      }
+  }()
 
-    // Initialize Acc, Gyro & Mag
+  // Initialize Acc, Gyro & Mag
 	C.ACC_init ();
 	C.Gyro_init();
 	C.Mag_init();
 
-    fmt.Println("Loggin Accelerometer data ...");
 
+  fmt.Println("Ready to press button")
+  for {
+    if (C.digitalRead(GPIO4) == C.LOW) {
+      break
+    }
+  }
+  fmt.Println("Button Pressed")
+
+
+
+  fmt.Println("Loggin Accelerometer data ...");
 	for {
 		C.ACC_getADC ();
+    C.Gyro_getADC();
 		C.clock_gettime(C.CLOCK_REALTIME, &timestamp)
-  		buffer := fmt.Sprintf("AccelXYZ, %d, %d, %d, %d, %d\n", C.imu.accADC[C.ROLL],C.imu.accADC[C.PITCH], C.imu.accADC[C.YAW], int(timestamp.tv_sec), int(timestamp.tv_nsec));
-  		fmt.Printf(buffer)
-  		// Write to the file
-  		//f.WriteString(buffer)
-
-  		/*
-  		C.Gyro_getADC();
-  		fmt.Printf("GyroXYZ: %d %d %d\n", C.imu.gyroADC[C.ROLL], C.imu.gyroADC[C.PITCH], C.imu.gyroADC[C.YAW]);
-  		C.Device_Mag_getADC();
-  		fmt.Printf("MagXYZ: %d %d %d\n ", C.imu.magADC[C.ROLL],C.imu.magADC[C.PITCH], C.imu.magADC[C.YAW]);
-  		*/
-
-  		C.sleep(1)
-
+  	buffer := fmt.Sprintf("AccelXYZ, %d, %d, %d, %d, %d\n", C.imu.accADC[C.ROLL],C.imu.accADC[C.PITCH], C.imu.accADC[C.YAW], int(timestamp.tv_sec), int(timestamp.tv_nsec));
+  	//fmt.Printf(buffer)
+  	// Write to the file
+  	f.WriteString(buffer)
+  	//C.sleep(1)
 	}
 
 }
